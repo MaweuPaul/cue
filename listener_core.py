@@ -114,6 +114,10 @@ def answer_question(qa: QAEngine, on_event: EventCallback, text: str):
             on_event({"type": "answer_delta", "text": delta})
         log.info("answer: %r", answer)
         on_event({"type": "answer_done"})
+        # Feed our own answer back into the rolling transcript so the next
+        # call can see it was already addressed, instead of re-answering a
+        # later fragment of the same question from scratch.
+        qa.add_transcript_line("assistant", answer)
     except Exception as e:  # noqa: BLE001
         log.exception("error answering question")
         on_event({"type": "error", "text": str(e)})

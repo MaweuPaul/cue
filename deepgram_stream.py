@@ -115,6 +115,9 @@ class DeepgramListenerLoop:
             socket = self._sockets.get(chunk.source)
             if socket is None:
                 continue
+            if self.toggle.is_enabled(chunk.source):
+                level = float(np.sqrt(np.mean(np.square(chunk.audio)))) if chunk.audio.size else 0.0
+                self.on_event({"type": "audio_level", "source": chunk.source, "level": level})
             pcm16 = (np.clip(chunk.audio, -1, 1) * 32767).astype(np.int16).tobytes()
             try:
                 socket.send_media(pcm16)
