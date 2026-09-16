@@ -25,10 +25,14 @@ from qa_engine import QAEngine
 EventCallback = Callable[[dict], None]
 log = logging.getLogger("listener")
 
-# If a buffered utterance hasn't grown in this long (e.g. the video got
-# paused, or Deepgram just never fired speech_final for some reason), flush
-# whatever's buffered instead of waiting for speech_final forever.
-STALE_UTTERANCE_TIMEOUT = 6.0
+# Deepgram fires `is_final` for each stabilized chunk within a sentence (e.g.
+# on a brief pause) well before the speaker is actually done. Rather than
+# trying to detect "end of utterance" ourselves (speech_final, max-duration
+# caps, etc. — all of which kept failing in different ways), just buffer
+# per-source and flush whatever's there once this much silence passes since
+# the last chunk. Simple, and Gemini sees the full rolling transcript as
+# context anyway, so it can piece together multi-part questions on its own.
+IDLE_FLUSH_SECONDS = 1.5
 
 
 class DeepgramListenerLoop:
@@ -54,11 +58,6 @@ class DeepgramListenerLoop:
         self._threads: list[threading.Thread] = []
         self._sockets: dict[str, V1SocketClient] = {}
         self._connect_cms: dict[str, object] = {}
-        # Deepgram fires `is_final` for each stabilized chunk within a sentence
-        # (e.g. on a brief pause), well before the speaker is actually done —
-        # buffer those per source and only treat it as one complete question
-        # once `speech_final` says the utterance has ended (or the timeout
-        # fallback below fires).
         self._buffer_lock = threading.Lock()
         self._utterance_buffers: dict[str, str] = {}
         self._utterance_last_update: dict[str, float] = {}
@@ -72,7 +71,7 @@ class DeepgramListenerLoop:
         t = threading.Thread(target=self._feed_loop, daemon=True)
         t.start()
         self._threads.append(t)
-        flush_t = threading.Thread(target=self._stale_flush_loop, daemon=True)
+        flush_t = threading.Thread(target=self._idle_flush_loop, daemon=True)
         flush_t.start()
         self._threads.append(flush_t)
 
@@ -98,7 +97,7 @@ class DeepgramListenerLoop:
             text = alts[0].transcript.strip() if alts else ""
             if not text:
                 return
-            self._handle_transcript(source, text, speech_final=bool(result.speech_final))
+            self._handle_transcript(source, text)
 
         socket.on(EventType.MESSAGE, on_message)
         socket.on(EventType.ERROR, lambda exc: log.error("deepgram %s error: %s", source, exc))
@@ -122,22 +121,19 @@ class DeepgramListenerLoop:
             except Exception:  # noqa: BLE001
                 log.exception("failed to send audio to deepgram (%s)", chunk.source)
 
-    def _handle_transcript(self, source: str, text: str, speech_final: bool):
+    def _handle_transcript(self, source: str, text: str):
         if not self.toggle.is_enabled(source):
             with self._buffer_lock:
                 self._utterance_buffers.pop(source, None)
                 self._utterance_last_update.pop(source, None)
             return
-        log.info("transcribed [%s]: %r (speech_final=%s)", source, text, speech_final)
+        log.info("transcribed [%s]: %r", source, text)
         self.on_event({"type": "transcript", "source": source, "text": text})
 
         with self._buffer_lock:
             buf = self._utterance_buffers.get(source, "")
             self._utterance_buffers[source] = f"{buf} {text}".strip() if buf else text
             self._utterance_last_update[source] = time.time()
-
-        if speech_final:
-            self._flush_utterance(source)
 
     def _flush_utterance(self, source: str):
         with self._buffer_lock:
@@ -148,17 +144,16 @@ class DeepgramListenerLoop:
         self.qa.add_transcript_line(source, full_utterance)
         answer_question(self.qa, self.on_event, full_utterance)
 
-    def _stale_flush_loop(self):
+    def _idle_flush_loop(self):
         while not self._stop_event.is_set():
-            time.sleep(0.5)
+            time.sleep(0.3)
             now = time.time()
             with self._buffer_lock:
-                stale_sources = [
+                idle_sources = [
                     src for src, ts in self._utterance_last_update.items()
-                    if now - ts >= STALE_UTTERANCE_TIMEOUT
+                    if now - ts >= IDLE_FLUSH_SECONDS
                 ]
-            for src in stale_sources:
-                log.info("utterance timed out waiting for speech_final [%s] — flushing anyway", src)
+            for src in idle_sources:
                 self._flush_utterance(src)
 
     def stop(self):

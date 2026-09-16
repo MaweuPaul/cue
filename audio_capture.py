@@ -33,6 +33,25 @@ def _resample(audio: np.ndarray, src_sr: int, dst_sr: int = TARGET_SR) -> np.nda
     return resample_poly(audio, up, down).astype(np.float32)
 
 
+# Windows' per-device mic volume/boost keeps getting reset (e.g. by switching
+# default devices for VB-Cable), which silently makes speech too quiet to
+# transcribe. Auto-gain the mic in software instead of depending on OS
+# settings staying put: scale each block's peak up towards a target level,
+# capped so we don't amplify silence/noise into garbage.
+AUTO_GAIN_TARGET_PEAK = 0.3
+AUTO_GAIN_MAX = 40.0
+
+
+def _auto_gain(audio: np.ndarray) -> np.ndarray:
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak < 1e-6:
+        return audio
+    gain = min(AUTO_GAIN_TARGET_PEAK / peak, AUTO_GAIN_MAX)
+    if gain <= 1.0:
+        return audio
+    return np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
+
+
 class SourceRecorder(threading.Thread):
     """Records one audio source in fixed-length, overlapping blocks."""
 
@@ -78,6 +97,8 @@ class SourceRecorder(threading.Thread):
                         if len(buf) >= block_frames:
                             block = buf[-block_frames:]
                             buf = buf[-overlap_frames:] if overlap_frames else np.zeros(0, dtype=np.float32)
+                            if self.source_name == "mic":
+                                block = _auto_gain(block)
                             resampled = _resample(block, self.sample_rate)
                             self.out_queue.put(
                                 AudioChunk(source=self.source_name, audio=resampled, timestamp=time.time())
@@ -91,6 +112,35 @@ class SourceRecorder(threading.Thread):
                     "%s recorder crashed, reopening in 1s", self.source_name
                 )
                 self._stop_event.wait(1)
+
+
+_VIRTUAL_DEVICE_MARKERS = ("cable", "vb-audio", "virtual")
+
+
+def _pick_real_microphone():
+    """Windows (or VB-Cable itself) can silently reclaim the default recording
+    device as the VB-Cable virtual device — which then "records" as pure
+    silence since nothing feeds directly into it. Actively avoid picking a
+    virtual device as the mic, regardless of what Windows currently reports
+    as default."""
+    import logging
+
+    log = logging.getLogger("listener")
+    default = sc.default_microphone()
+    if not any(marker in default.name.lower() for marker in _VIRTUAL_DEVICE_MARKERS):
+        return default
+
+    log.warning(
+        "default mic %r looks like a virtual/loopback device, not a real "
+        "microphone — searching for a real one instead", default.name,
+    )
+    for candidate in sc.all_microphones(include_loopback=False):
+        if not any(marker in candidate.name.lower() for marker in _VIRTUAL_DEVICE_MARKERS):
+            log.warning("using %r as the mic instead", candidate.name)
+            return candidate
+
+    log.warning("no non-virtual microphone found — falling back to the virtual device anyway")
+    return default
 
 
 class AudioCapture:
@@ -112,7 +162,7 @@ class AudioCapture:
 
     def start(self):
         if self.capture_mic:
-            mic = sc.default_microphone()
+            mic = _pick_real_microphone()
             self._recorders.append(
                 SourceRecorder(
                     "mic", mic, 48_000, self.queue,

@@ -77,26 +77,29 @@ async def startup():
     if qa is None:
         log.warning("No GEMINI_API_KEY set — broadcasting transcript only, no Q&A answers.")
 
-    capture_system = os.environ.get("CAPTURE_SYSTEM_AUDIO", "true").lower() not in ("0", "false", "no")
-    capture_mic = os.environ.get("CAPTURE_MIC", "true").lower() not in ("0", "false", "no")
-    sources = " + ".join(filter(None, ["mic" if capture_mic else "", "system audio" if capture_system else ""])) or "nothing (!)"
-    capture_toggle = CaptureToggle(mic=capture_mic, system=capture_system)
+    # Initial on/off state for the UI toggle — but both capture pipelines
+    # always physically start regardless (see below), so that toggling a
+    # source on later from the page actually has something to turn on.
+    initial_system = os.environ.get("CAPTURE_SYSTEM_AUDIO", "true").lower() not in ("0", "false", "no")
+    initial_mic = os.environ.get("CAPTURE_MIC", "true").lower() not in ("0", "false", "no")
+    sources = " + ".join(filter(None, ["mic" if initial_mic else "", "system audio" if initial_system else ""])) or "nothing (!)"
+    capture_toggle = CaptureToggle(mic=initial_mic, system=initial_system)
 
     if _has_key("DEEPGRAM_API_KEY"):
         from deepgram_stream import DeepgramListenerLoop
 
         listener = DeepgramListenerLoop(
             os.environ["DEEPGRAM_API_KEY"], qa, _on_event,
-            capture_mic=capture_mic, capture_system=capture_system, toggle=capture_toggle,
+            capture_mic=True, capture_system=True, toggle=capture_toggle,
         )
-        log.info("listener started (%s, Deepgram streaming)", sources)
+        log.info("listener started (mic + system audio pipelines running; active: %s, Deepgram streaming)", sources)
     else:
         transcriber = Transcriber()
         listener = ListenerLoop(
             transcriber, qa, _on_event,
-            capture_mic=capture_mic, capture_system=capture_system, toggle=capture_toggle,
+            capture_mic=True, capture_system=True, toggle=capture_toggle,
         )
-        log.info("listener started (%s, local Whisper)", sources)
+        log.info("listener started (mic + system audio pipelines running; active: %s, local Whisper)", sources)
     listener.start()
 
 
@@ -125,7 +128,9 @@ async def ws_endpoint(websocket: WebSocket):
     clients.add(websocket)
     log.info("viewer connected: %s (total: %d)", websocket.client, len(clients))
     if qa_engine is not None and qa_engine.topic_hint:
-        await websocket.send_text(json.dumps({"type": "topic", "text": qa_engine.topic_hint}))
+        qa_engine.set_topic("")
+        log.info("topic hint cleared (new page connection)")
+        await _broadcast({"type": "topic", "text": ""})
     if capture_toggle is not None:
         await websocket.send_text(json.dumps({"type": "capture_state", **capture_toggle.state()}))
     try:

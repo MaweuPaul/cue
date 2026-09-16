@@ -19,16 +19,20 @@ system ┘         │                  │                              │
 - [audio_capture.py](audio_capture.py) — records mic + system-output audio via
   `soundcard` (WASAPI loopback on Windows, no virtual cable needed for wired
   output — see the Bluetooth note below), in small chunks. Auto-recovers if a
-  device throws (sleep/wake, device changes, etc).
+  device throws (sleep/wake, device changes, etc), auto-gains the mic in
+  software (up to 40x) so a quiet input doesn't depend on Windows volume
+  settings staying put, and actively avoids picking a VB-Cable/virtual device
+  as the mic even if Windows reports it as the current default.
 - **Transcription** — two interchangeable backends, picked automatically:
   - [deepgram_stream.py](deepgram_stream.py) — real streaming transcription
     (sub-second latency) if `DEEPGRAM_API_KEY` is set. This is the
     recommended path. Deepgram fires a stabilized `is_final` chunk every time
     the speaker briefly pauses mid-sentence, well before they're actually
-    done — so this buffers those per source and only treats it as one
-    complete utterance once Deepgram's `speech_final` says the speaker is
-    done, or (fallback) once ~6s pass with no new speech for that source, so
-    a paused video or a stuck buffer doesn't wait forever.
+    done — so this buffers those per source and flushes once ~1.5s of
+    silence passes since the last chunk on that source. Simple idle-timeout,
+    no attempt to detect "end of sentence" — Gemini sees the full rolling
+    transcript as context on every call anyway, so it can piece together a
+    question that got split across a couple of flushes on its own.
   - [transcriber.py](transcriber.py) — local, offline `faster-whisper` if no
     Deepgram key is configured. Slower (batch, fixed-size chunks) but fully
     free and private.
@@ -94,8 +98,9 @@ Then open `.env` in any text editor and fill in:
   streaming transcription instead of the slower local fallback. Free $200
   credit, no card required: https://console.deepgram.com/signup
 - `ACCESS_PIN` — pick any PIN; required to connect to the viewer page.
-- `CAPTURE_MIC` / `CAPTURE_SYSTEM_AUDIO` — starting state for each source
-  (`true`/`false`); both are also toggleable live from the page.
+- `CAPTURE_MIC` / `CAPTURE_SYSTEM_AUDIO` — starting on/off state for the page
+  toggles. Both pipelines always physically run regardless of these values,
+  so toggling a source on from the page always works even if it started off.
 
 **5. (Optional) If your PC's default audio output is Bluetooth headphones**,
 see the Bluetooth note under Notes below before running — system-audio
@@ -117,6 +122,9 @@ see:
 - **Guide the AI** — a text box (paste as much as you want, including a full
   resume) telling the model what to expect; it collapses to a short summary
   after you hit Set (click it, or the show/hide button, to expand again).
+  Lives server-side, so it survives a page refresh but clears for every
+  connected device whenever any page (re)connects — including automatic
+  reconnects after a network blip, not just an intentional reload.
 - A live **Q&A** feed and a collapsible raw **Transcript**.
 
 No microphone access happens in the browser — the PC does all the capturing,
@@ -147,7 +155,13 @@ Press `Ctrl+C` to stop. This path always uses local `faster-whisper`, even if
   (`mmsys.cpl`) → Recording tab → **CABLE Output** → Properties → Listen tab
   → enable "Listen to this device" → route it to your Bluetooth headphones.
   System-audio capture then works normally (it just targets whatever the
-  Windows default output device is) while you still hear everything.
+  Windows default output device is) while you still hear everything. Note:
+  Windows (or the VB-Cable driver) can later reclaim **CABLE Output** as the
+  default *recording* device too, which would make mic capture go silent —
+  `audio_capture.py` actively detects and skips virtual devices when picking
+  the mic, so this shouldn't require manual fixing, but if the mic ever goes
+  quiet, check Sound settings → Recording and confirm your real mic is still
+  selected.
 - **Privacy**: Gemini's free tier says content "used to improve our
   products" (per Google's pricing page) — the paid tier does not. Since this
   streams live conversation context to Gemini, keep that in mind for
