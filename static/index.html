@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Listener</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 16px; font-family: -apple-system, system-ui, sans-serif;
+    background: #0e0f12; color: #e8e8ec; min-height: 100vh; box-sizing: border-box;
+  }
+  h1 { font-size: 1.1rem; margin: 0 0 4px; }
+  .sub { color: #8b8d98; font-size: 0.85rem; margin-bottom: 16px; }
+  #status { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+  .status-idle { background: #2a2c33; color: #9a9ca6; }
+  .status-live { background: #163a24; color: #4ade80; }
+  .status-err { background: #3a1616; color: #f87171; }
+  section { margin-top: 20px; }
+  h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #8b8d98; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  h2 button { background: none; border: none; color: #8b8d98; font-size: 0.75rem; cursor: pointer; text-decoration: underline; }
+  .line { padding: 10px 12px; border-radius: 8px; background: #1a2233; border-left: 3px solid #4f7cff; margin-bottom: 8px; font-size: 1rem; line-height: 1.45; word-wrap: break-word; }
+  .q { color: #9fb4ff; font-weight: 600; display: block; margin-bottom: 4px; }
+  .a { white-space: pre-wrap; }
+  .transcript-line { padding: 6px 10px; border-radius: 6px; background: #17181c; margin-bottom: 4px; font-size: 0.85rem; color: #a9abb4; }
+  #transcript.collapsed { display: none; }
+  .empty { color: #5a5c66; font-size: 0.9rem; padding: 8px 0; }
+  #pinGate { display: flex; gap: 8px; margin: 12px 0; }
+  #pinGate.hidden { display: none; }
+  #pinInput {
+    flex: 1; padding: 12px; font-size: 1rem; border-radius: 10px; border: 1px solid #2a2c33;
+    background: #17181c; color: #e8e8ec;
+  }
+  #pinSubmit { padding: 12px 18px; font-size: 1rem; border-radius: 10px; border: none; background: #4f7cff; color: white; font-weight: 600; cursor: pointer; }
+  #topicForm { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; }
+  #topicInput {
+    padding: 10px 12px; font-size: 0.9rem; border-radius: 10px; border: 1px solid #2a2c33;
+    background: #17181c; color: #e8e8ec; font-family: inherit; resize: vertical;
+    min-height: 90px; line-height: 1.4;
+  }
+  #topicSubmit {
+    align-self: flex-end; padding: 10px 20px; font-size: 0.9rem; border-radius: 10px; border: none;
+    background: #2a2c33; color: #e8e8ec; font-weight: 600; cursor: pointer;
+  }
+  #topicCurrent {
+    color: #6f7280; font-size: 0.78rem; margin-top: 6px; min-height: 1em; cursor: pointer;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #topicForm.collapsed { display: none; }
+  #topicCurrent.expanded { -webkit-line-clamp: unset; }
+  #sourceToggles { display: flex; gap: 10px; margin: 12px 0; }
+  .src-toggle {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 10px; border-radius: 10px; border: 1px solid #2a2c33; background: #17181c;
+    color: #9a9ca6; font-size: 0.85rem; font-weight: 600; cursor: pointer; user-select: none;
+  }
+  .src-toggle.on { background: #163a24; border-color: #1f4a2e; color: #4ade80; }
+  .src-toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+</style>
+</head>
+<body>
+  <h1>Listener</h1>
+  <div class="sub">Watching from your PC's mic + system audio &middot; <span id="status" class="status-idle">idle</span></div>
+
+  <form id="pinGate">
+    <input id="pinInput" type="text" inputmode="numeric" placeholder="Access PIN" autocomplete="off" />
+    <button id="pinSubmit" type="submit">Connect</button>
+  </form>
+
+  <div id="sourceToggles">
+    <div class="src-toggle" id="toggleMic" data-source="mic"><span class="dot"></span>Mic</div>
+    <div class="src-toggle" id="toggleSystem" data-source="system"><span class="dot"></span>System audio</div>
+  </div>
+
+  <section>
+    <h2>Guide the AI <button id="toggleTopicForm" type="button">hide</button></h2>
+    <form id="topicForm">
+      <textarea id="topicInput" placeholder="e.g. African geography &amp; capital cities quiz — or paste your resume / background info here" autocomplete="off"></textarea>
+      <button id="topicSubmit" type="submit">Set</button>
+    </form>
+    <div id="topicCurrent"></div>
+  </section>
+
+  <section>
+    <h2>Q&amp;A</h2>
+    <div id="qa"><div class="empty">Waiting for the first question…</div></div>
+  </section>
+
+  <section>
+    <h2>Transcript <button id="toggleTranscript">show</button></h2>
+    <div id="transcript" class="collapsed"></div>
+  </section>
+
+<script>
+const statusEl = document.getElementById('status');
+const qaEl = document.getElementById('qa');
+const transcriptEl = document.getElementById('transcript');
+const toggleBtn = document.getElementById('toggleTranscript');
+const pinGate = document.getElementById('pinGate');
+const pinInput = document.getElementById('pinInput');
+const topicForm = document.getElementById('topicForm');
+const topicInput = document.getElementById('topicInput');
+const topicCurrent = document.getElementById('topicCurrent');
+const toggleTopicForm = document.getElementById('toggleTopicForm');
+const toggleMic = document.getElementById('toggleMic');
+const toggleSystem = document.getElementById('toggleSystem');
+
+let ws = null;
+let currentAnswerEl = null;
+let reconnectDelay = 1000;
+let reconnectTimer = null;
+
+toggleBtn.addEventListener('click', () => {
+  const hidden = transcriptEl.classList.toggle('collapsed');
+  toggleBtn.textContent = hidden ? 'show' : 'hide';
+});
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = 'status-' + cls;
+}
+
+function clearEmpty() {
+  const empty = qaEl.querySelector('.empty');
+  if (empty) empty.remove();
+}
+
+function addTranscriptLine(source, text) {
+  const div = document.createElement('div');
+  div.className = 'transcript-line';
+  div.textContent = '[' + source + '] ' + text;
+  transcriptEl.prepend(div);
+}
+
+function addQuestion(text) {
+  clearEmpty();
+  const div = document.createElement('div');
+  div.className = 'line';
+  div.innerHTML = '<span class="q">Q: ' + text.replace(/</g, '&lt;') + '</span><span class="a"></span>';
+  qaEl.prepend(div);
+  currentAnswerEl = div.querySelector('.a');
+}
+
+function appendAnswerDelta(delta) {
+  if (currentAnswerEl) currentAnswerEl.textContent += delta;
+}
+
+function getSavedPin() {
+  try { return sessionStorage.getItem('listenerPin') || ''; } catch (e) { return ''; }
+}
+function savePin(pin) {
+  try { sessionStorage.setItem('listenerPin', pin); } catch (e) {}
+}
+function clearSavedPin() {
+  try { sessionStorage.removeItem('listenerPin'); } catch (e) {}
+}
+
+function wsUrl(pin) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return proto + '://' + location.host + '/ws?pin=' + encodeURIComponent(pin);
+}
+
+function connect(pin) {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (!pin) {
+    setStatus('enter PIN', 'idle');
+    pinGate.classList.remove('hidden');
+    return;
+  }
+  try {
+    setStatus('connecting…', 'idle');
+    ws = new WebSocket(wsUrl(pin));
+  } catch (err) {
+    setStatus('error', 'err');
+    addTranscriptLine('error', 'failed to open connection: ' + err.message);
+    return;
+  }
+
+  ws.onopen = () => {
+    setStatus('live', 'live');
+    pinGate.classList.add('hidden');
+    reconnectDelay = 1000;
+  };
+
+  ws.onclose = (evt) => {
+    if (evt.code === 4401) {
+      setStatus('bad pin', 'err');
+      clearSavedPin();
+      pinGate.classList.remove('hidden');
+      return; // don't auto-reconnect with a known-bad pin
+    }
+    setStatus('reconnecting…', 'err');
+    reconnectTimer = setTimeout(() => connect(getSavedPin()), reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
+  };
+
+  ws.onerror = () => setStatus('error', 'err');
+
+  ws.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.type === 'transcript') addTranscriptLine(msg.source, msg.text);
+    else if (msg.type === 'question') addQuestion(msg.text);
+    else if (msg.type === 'answer_delta') appendAnswerDelta(msg.text);
+    else if (msg.type === 'error') addTranscriptLine('error', msg.text);
+    else if (msg.type === 'topic') setTopicDisplay(msg.text);
+    else if (msg.type === 'capture_state') setCaptureState(msg);
+  };
+}
+
+function setTopicDisplay(text) {
+  topicCurrent.textContent = text ? 'Guiding topic: ' + text : '';
+  if (text) topicInput.value = text;
+}
+
+function setCaptureState(state) {
+  toggleMic.classList.toggle('on', !!state.mic);
+  toggleSystem.classList.toggle('on', !!state.system);
+}
+
+function sendCaptureToggle(source, enabled) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'set_capture', source, enabled }));
+}
+
+pinGate.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const pin = pinInput.value.trim();
+  if (!pin) return;
+  savePin(pin);
+  connect(pin);
+});
+
+topicForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'set_topic', text: topicInput.value.trim() }));
+  topicForm.classList.add('collapsed');
+  toggleTopicForm.textContent = 'show';
+});
+
+toggleTopicForm.addEventListener('click', () => {
+  const hidden = topicForm.classList.toggle('collapsed');
+  toggleTopicForm.textContent = hidden ? 'show' : 'hide';
+});
+
+topicCurrent.addEventListener('click', () => {
+  topicCurrent.classList.toggle('expanded');
+});
+
+for (const el of [toggleMic, toggleSystem]) {
+  el.addEventListener('click', () => {
+    const nowOn = !el.classList.contains('on');
+    el.classList.toggle('on', nowOn);
+    sendCaptureToggle(el.dataset.source, nowOn);
+  });
+}
+
+connect(getSavedPin());
+
+// Mobile browsers suspend timers/sockets on a backgrounded tab; when the
+// tab comes back, force a reconnect immediately instead of waiting on a
+// backoff timer that may never have fired.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && (!ws || ws.readyState === WebSocket.CLOSED)) {
+    reconnectDelay = 1000;
+    connect(getSavedPin());
+  }
+});
+</script>
+</body>
+</html>
